@@ -84,6 +84,18 @@ def parse_args_and_config():
         "--add_noise",
         action="store_true"
     )
+    # kernel_estimator argument
+    parser.add_argument(
+        "--kernel_estimator",
+        action="store_true"
+    )
+    parser.add_argument("--n_feats", type=int, default=64, help="conv channel")
+    parser.add_argument("--kernel_size", type=int, default=19, help="predict kernel size")
+    parser.add_argument("--kernel_model_path", type=str, default="/eva_data2/shlu2240/DDNM/exp/logs/kernel_estimator/estimator_kernel.pt")
+    parser.add_argument("--gt_kernel_path", type=str)
+    parser.add_argument("--IR_output", type=str, help="path to IR model output image")
+    parser.add_argument("--N", type=int, help="path to IR model output image")
+
 
     
 

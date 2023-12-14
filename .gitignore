@@ -1,0 +1,5 @@
+/exp/datasets/imagenet
+/exp/datasets/celeba_hq
+/exp/datasets/256_celeba_hq
+/exp/image_samples
+/exp/logs

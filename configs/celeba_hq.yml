@@ -38,3 +38,6 @@ time_travel:
     T_sampling: 100
     travel_length: 1
     travel_repeat: 1
+
+user:
+    ddnm : True

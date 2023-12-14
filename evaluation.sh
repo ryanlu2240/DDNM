@@ -34,3 +34,16 @@ python main.py --ni --config imagenet_256.yml --path_y imagenet --eta 0.85 --deg
 python main.py --ni --config imagenet_256.yml --path_y imagenet --eta 0.85 --deg "cs_walshhadamard" --deg_scale 0.25 --sigma_y 0. -i imagenet_cs_wh_025
 
 python main.py --ni --config imagenet_256.yml --path_y imagenet --eta 0.85 --deg "inpainting" --sigma_y 0. -i imagenet_inpainting
+
+
+
+# demo
+# python main.py --ni --simplified --config celeba_hq.yml --path_y old_celeba_hq --eta 0.85 --deg "sr_averagepooling" --deg_scale 4.0 --sigma_y 0 -i demo
+
+# with kernel estimator
+# python main.py --ni --simplified --config celeba_hq.yml --path_y old_celeba_hq --eta 0.85 --deg "sr_averagepooling" --deg_scale 4.0 --sigma_y 0 -i demo --kernel_estimator
+
+# python main.py --ni --simplified --config celeba_hq.yml --path_y old_celeba_hq --eta 0.85 --deg "sr_averagepooling" --deg_scale 4.0 --sigma_y 0 -i estimate_kernel_v7 --kernel_estimator --gt_kernel_path /eva_data2/shlu2240/Dataset/celeba_hq/train/kernel/00000.npy
+
+
+python main.py --ni --simplified --config celeba_hq.yml --path_y test_IR/3/hq --eta 0.85 --deg "sr_averagepooling" --deg_scale 4.0 --sigma_y 0 -i test_IR --IR_output /eva_data2/shlu2240/DDNM/exp/datasets/test_IR/3/lq/120000.png --N 2

@@ -2,15 +2,20 @@ import os
 import logging
 import time
 import glob
+import torchvision.transforms as transforms
+from PIL import Image
 
 import numpy as np
 import tqdm
 import torch
 import torch.utils.data as data
+import torch.nn.functional as F
 
 from datasets import get_dataset, data_transform, inverse_data_transform
 from functions.ckpt_util import get_ckpt_path, download
 from functions.svd_ddnm import ddnm_diffusion, ddnm_plus_diffusion
+from functions.conv_util import *
+from functions.plot_util import *
 
 import torchvision.utils as tvu
 
@@ -19,6 +24,7 @@ from guided_diffusion.script_util import create_model, create_classifier, classi
 import random
 
 from scipy.linalg import orth
+from guided_diffusion.kernel_estimator import Estimator
 
 
 def get_gaussian_noisy_img(img, noise_level):
@@ -111,6 +117,16 @@ class Diffusion(object):
             self.logvar = betas.log()
         elif self.model_var_type == "fixedsmall":
             self.logvar = posterior_variance.clamp(min=1e-20).log()
+
+        # load kernel estimator model
+        if self.args.kernel_estimator:
+            self.kernel_estimator = Estimator(self.args).to(self.device)
+            model_path = self.args.kernel_model_path
+            print(f"Loading model checkpoint from {model_path}\n")
+            self.kernel_estimator.load_state_dict(
+                torch.load(model_path)
+            )
+
 
     def sample(self, simplified):
         cls_fn = None
@@ -252,6 +268,7 @@ class Diffusion(object):
             scale=round(args.deg_scale)
             A = torch.nn.AdaptiveAvgPool2d((256//scale,256//scale))
             Ap = lambda z: MeanUpsample(z,scale)
+            # A_real = F.interpolate() 
         elif args.deg =='inpainting':
             loaded = np.load("exp/inp_masks/mask.npy")
             mask = torch.from_numpy(loaded).to(self.device)
@@ -299,16 +316,123 @@ class Diffusion(object):
         idx_so_far = args.subset_start
         avg_psnr = 0.0
         pbar = tqdm.tqdm(val_loader)
-        for x_orig, classes in pbar:
+        # custom kernel degradation
+        # custom_kernel = torch.tensor([[1/16, 1/16, 1/16, 1/16],
+        #                               [1/16, 1/16, 1/16, 1/16],
+        #                               [1/16, 1/16, 1/16, 1/16],
+        #                               [1/16, 1/16, 1/16, 1/16]], dtype=torch.float32).cuda()
+        # custom_kernel = torch.tensor([[2/60, 11/60, 2/60, 1/60],
+        #                               [1/60, 3/60, 3/60, 1/60],
+        #                               [1/60, 5/60, 12/60, 1/60],
+        #                               [7/60, 7/60, 2/60, 1/60]], dtype=torch.float32).cuda()
+        # custom_kernel = torch.tensor([[2/32, 3/32, 2/32, 2/32],
+        #                               [2/32, 1/32, 3/32, 2/32],
+        #                               [2/32, 3/32, 1/32, 2/32],
+        #                               [2/32, 1/32, 2/32, 2/32]], dtype=torch.float32).cuda()
+        # custom_kernel = torch.tensor([[2/40, 1/40, 2/40, 4/40],
+        #                               [2/40, 3/40, 3/40, 5/40],
+        #                               [3/40, 5/40, 2/40, 2/40],
+        #                               [3/40, 7/40, 2/40, 3/40]], dtype=torch.float32).cuda()
+        # custom_kernel = torch.tensor([[2/60, 11/60, 2/60, 1/60],
+        #                                 [1/60, 3/60, 3/60, 1/60],
+        #                                 [1/60, 5/60, 12/60, 1/60],
+        #                                 [7/60, 7/60, 2/60, 1/60]], dtype=torch.float32).cuda()
+        # custom_kernel = torch.tensor([[2/60, 11/60, 2/60, 1/60],
+        #                                 [1/60, 3/60, 3/60, 5/60],
+        #                                 [1/60, 5/60, 12/60, 1/60],
+        #                                 [13/60, 7/60, 2/60, 3/60]], dtype=torch.float32).cuda()
+        # custom_kernel = torch.tensor([[2/60, 3/60, 2/60, 1/60],
+        #                               [1/60, 3/60, 3/60, 5/60],
+        #                               [1/60, 5/60, 1/60, 1/60],
+        #                               [3/60, 7/60, 2/60, 3/60]], dtype=torch.float32).cuda()
+        # custom_kernel = torch.tensor([[2/60, 3/60, 2/60, 1/60],
+        #                               [1/60, 1/60, 1/60, 2/60],
+        #                               [1/60, 20/60, 1/60, 1/60],
+        #                               [1/60, 20/60, 2/60, 1/60]], dtype=torch.float32).cuda()
+        # custom_kernel = torch.tensor([[1, 0, 0, 0],
+        #                               [0, 0, 0, 0],
+        #                               [0, 0, 0, 0],
+        #                               [0, 0, 0, 0]], dtype=torch.float32).cuda()
+        # custom_kernel = torch.tensor([[2/40, 1/140, 2/40, 4/40, 1/60, 1/60, 1/60],
+        #                               [2/40, 3/40, 3/40, 5/40, 1/60, 1/160, 20/60],
+        #                               [2/40, 3/40, 3/40, 20/40, 1/60, 1/60, 1/60],
+        #                               [2/40, 3/80, 3/40, 5/40, 1/160, 1/60, 1/60],
+        #                               [2/40, 3/40, 3/40, 5/40, 1/60, 1/60, 1/60],
+        #                               [10/40, 5/40, 2/140, 2/40, 1/60, 1/90, 1/70],
+        #                               [3/40, 7/40, 2/40, 3/40, 1/60, 10/60, 1/60]], dtype=torch.float32).cuda()
+        # custom_kernel = create_random_kernel(kernel_size=19).float().cuda()
+        # if self.args.gt_kernel_path:
+        #     custom_kernel = np.load(self.args.gt_kernel_path)
+        #     custom_kernel = torch.from_numpy(custom_kernel).float().cuda()
+        # stride = int(self.args.deg_scale)
+        # padding = custom_kernel.shape[0] // 2
+        # gt_A = lambda z : convolution2d(z, custom_kernel, stride=stride, padding=padding) 
+        # # A = lambda z: convolution_with_A(matrix_A, z, padding=padding)
+        # # Ap = lambda z: convolution_with_A(matrix_A_pinverse, z, padding=0)[:, :, padding:-padding, padding:-padding]
+        # # Ap = lambda z: F.interpolate(z, scale_factor=4, mode='bicubic', align_corners=False)
+        # # Ap = lambda z: MeanUpsample(z,4)
+        # # Ap = lambda z: non_overlapConv_Ap(z, custom_kernel)
+        # avg_kernel_psnr = 0.0
+
+        IR_transformation = transforms.Compose([transforms.Resize([self.config.data.image_size, self.config.data.image_size]), transforms.ToTensor()])
+
+        IR_img = Image.open(self.args.IR_output).convert("RGB")
+        IR_img = IR_transformation(IR_img)
+        IR_img = IR_img.unsqueeze(0).to('cuda')
+        
+
+        A = lambda z: F.interpolate(z, size=(self.config.data.image_size // self.args.N, self.config.data.image_size // self.args.N), mode='bilinear', align_corners=False)
+        Ap = lambda z: F.interpolate(z, size=(self.config.data.image_size, self.config.data.image_size), mode='bilinear', align_corners=False)
+        ApA = lambda z: Ap(A(z))
+
+
+
+        for idx, (x_orig, classes) in enumerate(pbar):
             x_orig = x_orig.to(self.device)
+
+            _mse = torch.mean((IR_img[0].to(self.device) - x_orig[0]) ** 2)
+            _psnr = 10 * torch.log10(1 / _mse)
+            print('psnr between IR image and HQ:', _psnr)
+
+
             x_orig = data_transform(self.config, x_orig)
 
-            y = A(x_orig)
+            IR_img = data_transform(self.config, IR_img)
+            # y = gt_A(x_orig)
+            # # print(f'{y.shape=}')
+            # predict_kernel = custom_kernel.clone()
+            # if self.args.kernel_estimator:
+            #     with torch.no_grad():
+            #         predict_kernel = self.kernel_estimator(y).squeeze()
+            #         kernel_psnr = calculate_psnr(predict_kernel, custom_kernel)
+            #         avg_kernel_psnr += kernel_psnr
+            #     print('per sample kernel psnr:', kernel_psnr)
+            # plot_kernel(custom_kernel.unsqueeze(0).unsqueeze(0), predict_kernel.unsqueeze(0).unsqueeze(0), idx, self.args.image_folder)
+            # padding = predict_kernel.shape[0] // 2
+            # print('calculating matrix A...')
+            # time1 = time.time()
+            # matrix_A = convolution_to_A(predict_kernel, (1, 3, 256, 256), stride=int(self.args.deg_scale), padding=padding).cuda()
+            # time2 = time.time()
+            # matrix_A_pinverse = torch.pinverse(matrix_A) 
+            # time3 = time.time()
+            # print('get A:', time2 - time1)
+            # print('get A pinverse:', time3 - time2)
+            # print(f'{matrix_A.shape=}')
+            # print(f'{matrix_A_pinverse.shape=}')
+            # A = lambda z: convolution_with_A(matrix_A, z, padding=padding)
+            # Ap = lambda z: convolution_with_A(matrix_A_pinverse, z, padding=0)[:, :, padding:-padding, padding:-padding]
+
+            # y = F.interpolate(x_orig, size=(64, 64), mode='bicubic', align_corners=False) #bicubic degradation
+            # y = convolution2d(x_orig, custom_kernel, stride=4)
+            
+            
+            
 
             if config.sampling.batch_size!=1:
                 raise ValueError("please change the config file to set batch size as 1")
-
-            Apy = Ap(y)
+            Apy = IR_img
+            # Apy = Ap(y)
+            # print(f'{Apy.shape=}')
 
             os.makedirs(os.path.join(self.args.image_folder, "Apy"), exist_ok=True)
             for i in range(len(Apy)):
@@ -320,10 +444,14 @@ class Diffusion(object):
                     inverse_data_transform(config, x_orig[i]),
                     os.path.join(self.args.image_folder, f"Apy/orig_{idx_so_far + i}.png")
                 )
+                # tvu.save_image(
+                #     inverse_data_transform(config, y[i]),
+                #     os.path.join(self.args.image_folder, f"Apy/y_{idx_so_far + i}.png")
+                # )
                 
             # init x_T
             x = torch.randn(
-                y.shape[0],
+                x_orig.shape[0],
                 config.data.channels,
                 config.data.image_size,
                 config.data.image_size,
@@ -344,47 +472,75 @@ class Diffusion(object):
                 
                 
                 # reverse diffusion sampling
-                for i, j in tqdm.tqdm(time_pairs):
+                for i, j in time_pairs:
                     i, j = i*skip, j*skip
                     if j<0: j=-1 
 
                     if j < i: # normal sampling 
-                        t = (torch.ones(n) * i).to(x.device)
-                        next_t = (torch.ones(n) * j).to(x.device)
-                        at = compute_alpha(self.betas, t.long())
-                        at_next = compute_alpha(self.betas, next_t.long())
-                        sigma_t = (1 - at_next**2).sqrt()
-                        xt = xs[-1].to('cuda')
+                        if self.config.user.ddnm:
+                            #self inplement DDNM
+                            t = (torch.ones(n) * i).to(x.device)
+                            next_t = (torch.ones(n) * j).to(x.device)
+                            at = compute_alpha(self.betas, t.long())
+                            at_next = compute_alpha(self.betas, next_t.long())
+                            xt = xs[-1].to('cuda')
 
-                        et = model(xt, t)
+                            et = model(xt, t)
+                            # Eq. 12
+                            x0_t = (xt - et * (1 - at).sqrt()) / at.sqrt() 
 
-                        if et.size(1) == 6:
-                            et = et[:, :3]
+                            # Eq. 13
+                            x0_t_hat = ApA(Apy) + x0_t - ApA(x0_t)
 
-                        # Eq. 12
-                        x0_t = (xt - et * (1 - at).sqrt()) / at.sqrt()
+                            eta = self.args.eta
 
-                        # Eq. 19
-                        if sigma_t >= at_next*sigma_y:
-                            lambda_t = 1.
-                            gamma_t = (sigma_t**2 - (at_next*sigma_y)**2).sqrt()
+                            c1 = (1 - at_next).sqrt() * eta
+                            c2 = (1 - at_next).sqrt() * ((1 - eta ** 2) ** 0.5)
+
+                            # different from the paper, we use DDIM here instead of DDPM
+                            xt_next = at_next.sqrt() * x0_t_hat + (c1 * torch.randn_like(x0_t) + c2 * et)
+
+                            x0_preds.append(x0_t.to('cpu'))
+                            xs.append(xt_next.to('cpu'))   
                         else:
-                            lambda_t = (sigma_t)/(at_next*sigma_y)
-                            gamma_t = 0.
 
-                        # Eq. 17
-                        x0_t_hat = x0_t - lambda_t*Ap(A(x0_t) - y)
+                            t = (torch.ones(n) * i).to(x.device)
+                            next_t = (torch.ones(n) * j).to(x.device)
+                            at = compute_alpha(self.betas, t.long())
+                            at_next = compute_alpha(self.betas, next_t.long())
+                            sigma_t = (1 - at_next**2).sqrt()
+                            xt = xs[-1].to('cuda')
 
-                        eta = self.args.eta
+                            et = model(xt, t)
 
-                        c1 = (1 - at_next).sqrt() * eta
-                        c2 = (1 - at_next).sqrt() * ((1 - eta ** 2) ** 0.5)
+                            if et.size(1) == 6:
+                                et = et[:, :3]
 
-                        # different from the paper, we use DDIM here instead of DDPM
-                        xt_next = at_next.sqrt() * x0_t_hat + gamma_t * (c1 * torch.randn_like(x0_t) + c2 * et)
+                            # Eq. 12 
+                            x0_t = (xt - et * (1 - at).sqrt()) / at.sqrt()
 
-                        x0_preds.append(x0_t.to('cpu'))
-                        xs.append(xt_next.to('cpu'))    
+                            # Eq. 19
+                            if sigma_t >= at_next*sigma_y:
+                                lambda_t = 1.
+                                gamma_t = (sigma_t**2 - (at_next*sigma_y)**2).sqrt()
+                            else:
+                                lambda_t = (sigma_t)/(at_next*sigma_y)
+                                gamma_t = 0.
+
+                            # Eq. 17
+                            x0_t_hat = x0_t - lambda_t*Ap(A(x0_t) - y)
+
+                            eta = self.args.eta
+
+                            c1 = (1 - at_next).sqrt() * eta
+                            c2 = (1 - at_next).sqrt() * ((1 - eta ** 2) ** 0.5)
+
+                            # different from the paper, we use DDIM here instead of DDPM
+                            xt_next = at_next.sqrt() * x0_t_hat + gamma_t * (c1 * torch.randn_like(x0_t) + c2 * et)
+
+                            x0_preds.append(x0_t.to('cpu'))
+                            xs.append(xt_next.to('cpu'))  
+                            x0_t = (xt - et * (1 - at).sqrt())  
                     else: # time-travel back
                         next_t = (torch.ones(n) * j).to(x.device)
                         at_next = compute_alpha(self.betas, next_t.long())
@@ -404,14 +560,16 @@ class Diffusion(object):
             orig = inverse_data_transform(config, x_orig[0])
             mse = torch.mean((x[0].to(self.device) - orig) ** 2)
             psnr = 10 * torch.log10(1 / mse)
+            print('per sample psnr:', psnr)
             avg_psnr += psnr
 
-            idx_so_far += y.shape[0]
+            idx_so_far += x_orig.shape[0]
 
             pbar.set_description("PSNR: %.2f" % (avg_psnr / (idx_so_far - idx_init)))
 
         avg_psnr = avg_psnr / (idx_so_far - idx_init)
         print("Total Average PSNR: %.2f" % avg_psnr)
+        # print("Total Average kernel psnr: %.2f" % avg_kernel_psnr / (idx_so_far - idx_init))
         print("Number of samples: %d" % (idx_so_far - idx_init))
         
         
@@ -653,3 +811,5 @@ def compute_alpha(beta, t):
     beta = torch.cat([torch.zeros(1).to(beta.device), beta], dim=0)
     a = (1 - beta).cumprod(dim=0).index_select(0, t + 1).view(-1, 1, 1, 1)
     return a
+
+
